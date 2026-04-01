@@ -1,35 +1,36 @@
 // config.js
-/**
- * @fileoverview Centralized, immutable configuration for Ω OMEGA CORE.
- */
+// Single source of truth for all environment variables.
+// Fails fast with a clear message if a required variable is missing.
 
-require('dotenv').config(); 
+require('dotenv').config();
+
+function requireEnv(key) {
+    const val = process.env[key];
+    if (!val) throw new Error(`Missing required environment variable: ${key}`);
+    return val;
+}
 
 const config = {
-    tgBotToken: process.env.TG_BOT_TOKEN,
-    ownerTelegramId: process.env.OWNER_TG_ID,
-    ownerWhatsAppJids: [
-        process.env.OWNER_WA_JID
-    ], 
-    globalPrefix: '.',
-    
+    tgBotToken:        requireEnv('TG_BOT_TOKEN'),
+    ownerTelegramId:   requireEnv('OWNER_TG_ID'),
+    ownerWhatsAppJids: [ requireEnv('OWNER_WA_JID') ],
+    globalPrefix:      '.',
+
     system: {
-        taskTimeoutMs: 60000,
-        maxQueueConcurrency: 50, // 👈 Uncapped to 50 for max speed
-        watchdogTimeoutMs: 120000
+        taskTimeoutMs:       60000,
+        maxQueueConcurrency: 50,
+        watchdogTimeoutMs:   120000,
     },
 
-    // 🔴 SECURE REDIS INJECTION WITH SAFETY FALLBACKS
     redis: {
-        host: process.env.REDIS_HOST || 'redis-10250.crce218.eu-central-1-1.ec2.cloud.redislabs.com',
-        port: parseInt(process.env.REDIS_PORT || '10250', 10), 
-        password: process.env.REDIS_PASSWORD || 'sitYXPeb3sJG8OhmASZQRHE5Hra6qkP6'
+        host:     requireEnv('REDIS_HOST'),
+        port:     parseInt(requireEnv('REDIS_PORT'), 10),
+        password: requireEnv('REDIS_PASSWORD'),
     },
-    
-    // 🧠 OPENROUTER AI INJECTION WITH FALLBACK
+
     ai: {
-        openRouterKey: process.env.OPENROUTER_API_KEY || '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'
-    }
+        openRouterKey: requireEnv('OPENROUTER_API_KEY'),
+    },
 };
 
 module.exports = Object.freeze(config);

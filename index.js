@@ -1,120 +1,130 @@
 // index.js
-// Ω ELITE MULTI-SESSION OPERATOR (ADVANCED CORE)
+// Ω ELITE MULTI-SESSION OPERATOR
 
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
 const { startWhatsApp, activeSockets } = require('./core/whatsapp');
-const { startTelegram } = require('./core/telegram');
-const logger = require('./core/logger');
-const { ownerTelegramId } = require('./config');
-const watchdog = require('./core/watchdog');       
+const { startTelegram }                = require('./core/telegram');
+const logger                           = require('./core/logger');
+const { ownerTelegramId }              = require('./config');
+const watchdog                         = require('./core/watchdog');
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const SESSIONS_PATH = path.join(__dirname, 'data/sessions');
+const delay = ms => new Promise(r => setTimeout(r, ms));
 
-// 🛡️ ZERO-CRASH TOLERANCE
-process.on('uncaughtException', (err) => logger.error(`[CRASH PREVENTED] Uncaught Exception: ${err.message}`));
-process.on('unhandledRejection', (reason) => logger.error(`[CRASH PREVENTED] Unhandled Rejection: ${reason}`));
+// ─── Zero-crash tolerance ─────────────────────────────────────────────────────
+process.on('uncaughtException',  err    => logger.error('[CRASH PREVENTED] Uncaught Exception:',  err));
+process.on('unhandledRejection', reason => logger.error('[CRASH PREVENTED] Unhandled Rejection:', reason));
 
-process.on('SIGINT', async () => {
-    logger.warn('Shutting down safely... clearing queues.');
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+async function shutdown(signal) {
+    logger.warn(`[SHUTDOWN] ${signal} received — draining worker...`);
+    try {
+        const { broadcastWorker } = require('./core/bullEngine');
+        await broadcastWorker.close();
+    } catch (_) {}
     process.exit(0);
-});
+}
+process.once('SIGINT',  () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
 
-// 🧹 GHOST SWEEPER PROTOCOL
+// ─── Ghost session sweeper ────────────────────────────────────────────────────
 function sweepGhostSessions(sessionsDir) {
     if (!fs.existsSync(sessionsDir)) return;
-    const sessions = fs.readdirSync(sessionsDir);
-    let nukedCount = 0;
-
-    for (const folder of sessions) {
+    let nuked = 0;
+    for (const folder of fs.readdirSync(sessionsDir)) {
         const folderPath = path.join(sessionsDir, folder);
         if (!fs.statSync(folderPath).isDirectory()) continue;
-
         const credsPath = path.join(folderPath, 'creds.json');
-        let isCorrupted = false;
-
+        let corrupted = false;
         if (!fs.existsSync(credsPath)) {
-            isCorrupted = true;
+            corrupted = true;
         } else {
             try {
-                const fileData = fs.readFileSync(credsPath, 'utf-8');
-                if (!fileData || fileData.trim() === '') isCorrupted = true;
-                else JSON.parse(fileData);
-            } catch (e) { isCorrupted = true; }
+                const data = fs.readFileSync(credsPath, 'utf-8');
+                if (!data || !data.trim()) corrupted = true;
+                else JSON.parse(data);
+            } catch { corrupted = true; }
         }
-
-        if (isCorrupted) {
-            try {
-                fs.rmSync(folderPath, { recursive: true, force: true });
-                logger.warn(`🗑️ Swept corrupted ghost session: ${folder}`);
-                nukedCount++;
-            } catch (err) { logger.error(`Failed to delete ghost session ${folder}:`, err); }
+        if (corrupted) {
+            try { fs.rmSync(folderPath, { recursive: true, force: true }); nuked++; }
+            catch (err) { logger.error(`Failed to sweep ghost session ${folder}:`, err); }
         }
     }
-    if (nukedCount > 0) logger.success(`🧹 Ghost Sweeper destroyed ${nukedCount} dead session(s).`);
+    if (nuked > 0) logger.warn(`Ghost sweeper removed ${nuked} dead session(s).`);
 }
 
-async function bootEliteOperator() {
+// ─── Boot a single session with watchdog attachment ───────────────────────────
+async function bootSession(chatId, phoneNumber, slotId, sessionFolder) {
+    try {
+        const sock = await startWhatsApp(chatId, phoneNumber, slotId, true);
+        if (!sock) return;
+
+        global.waSocks.set(sessionFolder, sock);
+
+        const botId = sock.user?.id?.split(':')[0];
+        if (botId) {
+            watchdog.attach(botId, sock, async () => {
+                logger.error(`[WATCHDOG] Restarting frozen session: ${sessionFolder}`);
+                try { sock.ws.close(); } catch (_) {}
+                activeSockets.delete(sessionFolder);
+                global.waSocks.delete(sessionFolder);
+                await delay(3000);
+                await bootSession(chatId, phoneNumber, slotId, sessionFolder);
+            });
+        }
+    } catch (err) {
+        logger.error(`Failed to boot session ${sessionFolder}: ${err.message}`);
+        // Retry after 15 s so a transient network error doesn't kill the session permanently
+        await delay(15000);
+        await bootSession(chatId, phoneNumber, slotId, sessionFolder);
+    }
+}
+
+// ─── Main boot ────────────────────────────────────────────────────────────────
+async function boot() {
     try {
         console.clear();
-        logger.info('🚀 IGNITING PAPPY ULTIMATE ENGINE...');
+        logger.info('IGNITING PAPPY ULTIMATE ENGINE...');
 
-        let tgBot;
+        // Start Telegram dashboard first so pairing codes can be delivered
         try {
-            tgBot = await startTelegram();
+            const tgBot = await startTelegram();
             global.tgBot = tgBot;
-            logger.success('✅ Telegram Command Center Online');
-        } catch (e) { logger.error(`Telegram Dashboard failed to boot: ${e.message}`); }
+            logger.success('Telegram Command Center Online');
+        } catch (err) {
+            logger.error(`Telegram dashboard failed to boot: ${err.message}`);
+        }
 
-        global.waSocks = activeSockets || new Map();
-        const sessionsDir = path.join(__dirname, 'data/sessions');
-        if (!fs.existsSync(sessionsDir)) fs.mkdirSync(sessionsDir, { recursive: true });
-        
-        logger.info('🔍 Running pre-flight diagnostics...');
-        sweepGhostSessions(sessionsDir);
+        global.waSocks = activeSockets;
 
-        const validSessions = fs.readdirSync(sessionsDir).filter(file => fs.statSync(path.join(sessionsDir, file)).isDirectory());
-        
+        if (!fs.existsSync(SESSIONS_PATH)) fs.mkdirSync(SESSIONS_PATH, { recursive: true });
+
+        logger.info('Running pre-flight diagnostics...');
+        sweepGhostSessions(SESSIONS_PATH);
+
+        const validSessions = fs.readdirSync(SESSIONS_PATH)
+            .filter(f => fs.statSync(path.join(SESSIONS_PATH, f)).isDirectory());
+
         if (validSessions.length === 0) {
-            logger.info('⚠️ No saved sessions found. Use /pair in Telegram to link a bot.');
+            logger.info('No saved sessions found. Use /pair in Telegram to link a number.');
         } else {
-            logger.info(`📁 Found ${validSessions.length} active session(s). Initiating staggered boot...`);
-            
-            for (const sessionFolder of validSessions) {
-                logger.info(`Booting instance: ${sessionFolder}...`);
-                const parts = sessionFolder.split('_');
-
-                try {
-                    let waSock;
-                    let chatId = parts.length >= 2 ? parts[0] : ownerTelegramId;
-                    let phoneNumber = parts.length >= 2 ? parts[1] : sessionFolder;
-                    let slotId = parts[2] || '1';
-
-                    waSock = await startWhatsApp(chatId, phoneNumber, slotId, true);
-
-                    if (waSock) {
-                        global.waSocks.set(sessionFolder, waSock);
-                        const botId = waSock.user?.id?.split(':')[0];
-                        if (botId) {
-                            watchdog.attach(botId, waSock, async () => {
-                                logger.error(`[WATCHDOG] Restarting frozen session: ${sessionFolder}`);
-                                try { waSock.ws.close(); } catch(e){}
-                                activeSockets.delete(sessionFolder);
-                                await delay(2000); 
-                                await startWhatsApp(chatId, phoneNumber, slotId, true);
-                            });
-                        }
-                    }
-                    
-                    // ⚡ HUMAN EMULATION: Wait 3.5 seconds between logging into different numbers
-                    await delay(3500); 
-
-                } catch (e) { logger.error(`❌ Failed to boot session ${sessionFolder}: ${e.message}`); }
+            logger.info(`Found ${validSessions.length} session(s). Starting staggered boot...`);
+            for (const folder of validSessions) {
+                const parts    = folder.split('_');
+                const chatId   = parts.length >= 2 ? parts[0] : ownerTelegramId;
+                const phone    = parts.length >= 2 ? parts[1] : folder;
+                const slotId   = parts[2] || '1';
+                await bootSession(chatId, phone, slotId, folder);
+                await delay(3500); // stagger to avoid WA rate-limit on startup
             }
         }
-        
-        logger.system('✅ SYSTEM FULLY ONLINE AND AWAITING COMMANDS.');
-    } catch (error) { logger.error(`Critical Boot Failure: ${error.message}`); }
+
+        logger.system('SYSTEM FULLY ONLINE AND AWAITING COMMANDS.');
+    } catch (err) {
+        logger.error(`Critical boot failure: ${err.message}`);
+        // Don't exit — let the process stay alive so Telegram can still receive /pair
+    }
 }
 
-bootEliteOperator();
+boot();

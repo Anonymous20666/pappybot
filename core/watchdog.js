@@ -1,71 +1,87 @@
 // core/watchdog.js
-// 🐕 SMART WATCHDOG: Active Memory & Task Monitoring
+// Monitors socket health, pings idle connections, and triggers restarts
+// on zombie sockets. Also runs periodic memory and queue diagnostics.
 
-const logger = require('./logger');
+const logger      = require('./logger');
 const taskManager = require('./taskManager');
 
 class SmartWatchdog {
-    constructor(timeoutMs = 120000) { 
+    constructor(timeoutMs = 120000) {
         this.timeoutMs = timeoutMs;
-        this.monitors = new Map();
-        
-        // System Health Check every 60 seconds
-        this.healthCheckInterval = setInterval(() => this.runDiagnostics(), 60000);
+        this.monitors  = new Map(); // botId → { lastSeen, pingInterval, checkInterval }
+
+        // System diagnostics every 60 s
+        this.healthInterval = setInterval(() => this._runDiagnostics(), 60000);
+        this.healthInterval.unref?.(); // don't keep process alive just for this
     }
 
     attach(botId, sock, restartCallback) {
-        if (this.monitors.has(botId)) clearInterval(this.monitors.get(botId).interval);
+        // Clean up any existing monitor for this botId
+        this.detach(botId);
 
         const monitor = {
             lastSeen: Date.now(),
-            interval: setInterval(() => this._check(botId, sock, restartCallback), 30000) 
+            restartCallback,
         };
 
+        // Update lastSeen on every WS frame
+        const onMessage = () => { monitor.lastSeen = Date.now(); };
+        try { sock.ws.on('message', onMessage); } catch (_) {}
+        monitor.onMessage = onMessage;
+        monitor.sock      = sock;
+
+        // Check every 30 s
+        monitor.interval = setInterval(() => this._check(botId, sock, restartCallback), 30000);
+        monitor.interval.unref?.();
+
         this.monitors.set(botId, monitor);
-        sock.ws.on('message', () => this.update(botId));
+        logger.info(`[WATCHDOG] Attached to ${botId}`);
     }
 
-    update(botId) {
+    detach(botId) {
         const monitor = this.monitors.get(botId);
-        if (monitor) monitor.lastSeen = Date.now();
+        if (!monitor) return;
+        clearInterval(monitor.interval);
+        try { monitor.sock?.ws?.off?.('message', monitor.onMessage); } catch (_) {}
+        this.monitors.delete(botId);
     }
 
     _check(botId, sock, restartCallback) {
         const monitor = this.monitors.get(botId);
         if (!monitor) return;
 
-        const idleTime = Date.now() - monitor.lastSeen;
-        
-        if (idleTime > (this.timeoutMs / 2)) {
-            try { sock.ws.ping(); } 
-            catch (e) { logger.warn(`[WATCHDOG] Failed to ping socket for ${botId}.`); }
+        const idle = Date.now() - monitor.lastSeen;
+
+        // Ping at half the timeout threshold
+        if (idle > this.timeoutMs / 2) {
+            try { sock.ws.ping(); }
+            catch (_) { logger.warn(`[WATCHDOG] Ping failed for ${botId}.`); }
         }
 
-        if (idleTime > this.timeoutMs) {
-            logger.error(`🚨 [WATCHDOG] Zombie connection detected for ${botId}. Force restarting...`);
-            clearInterval(monitor.interval);
-            this.monitors.delete(botId);
-            restartCallback();
+        // Trigger restart if fully zombie
+        if (idle > this.timeoutMs) {
+            logger.error(`[WATCHDOG] Zombie detected: ${botId}. Restarting...`);
+            this.detach(botId);
+            try { restartCallback(); } catch (err) {
+                logger.error(`[WATCHDOG] Restart callback failed for ${botId}:`, err);
+            }
         }
     }
 
-    runDiagnostics() {
-        const stats = taskManager.getStats();
-        const mem = process.memoryUsage();
-        const memoryMB = Math.round(mem.rss / 1024 / 1024);
+    _runDiagnostics() {
+        const stats   = taskManager.getStats();
+        const memMB   = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
-        // 🛑 Detect stuck tasks (e.g., if WhatsApp bans an action and the queue freezes)
+        // Flush low-priority tasks if queue is severely congested
         if (stats.queued > 100 && stats.running >= taskManager.concurrency) {
-            logger.warn('🚨 [WATCHDOG] High queue congestion detected. Flushing low-priority tasks...');
-            // Keep priority 3 and above, dump the rest to save the engine
-            taskManager.queue = taskManager.queue.filter(job => job.priority >= 3);
+            logger.warn('[WATCHDOG] Queue congestion — flushing low-priority tasks...');
+            taskManager.queue = taskManager.queue.filter(j => j.priority >= 3);
         }
 
-        // 🛑 Critical Memory Leak Guard
-        if (memoryMB > 1024) { 
-            logger.error('🚨 [WATCHDOG] CRITICAL MEMORY USAGE. Forcing Cache Clear.');
-            if (global.gc) global.gc(); // Requires node --expose-gc
-            global.messageCache = new WeakMap(); // Reset Baileys message cache
+        // Force GC and reset message cache on critical memory
+        if (memMB > 1024) {
+            logger.error(`[WATCHDOG] Critical memory: ${memMB}MB. Forcing GC...`);
+            if (global.gc) global.gc();
         }
     }
 }
