@@ -19,6 +19,17 @@ try {
     logger.warn(`AI Module offline or missing. Telegram /ai command disabled.`);
 }
 
+// ─── Group Status plugin reference (lazy-loaded so it's always fresh) ─────────
+function getGsPlugin() {
+    try {
+        const p = path.join(__dirname, '../plugins/pappy-groupstatus');
+        delete require.cache[require.resolve(p)];
+        return require(p);
+    } catch (e) {
+        return null;
+    }
+}
+
 function getDynamicPlugins() {
     const pluginsDir = path.join(__dirname, '../plugins');
     if (!fs.existsSync(pluginsDir)) return {};
@@ -128,6 +139,7 @@ async function startTelegram() {
                 [ Markup.button.callback('📡 Broadcast & Godcast', `bcast_node_${sessionKey}`) ],
                 [ Markup.button.callback('🎯 Nexus Sniper', `nexus_node_${sessionKey}`) ],
                 [ Markup.button.callback('💬 Send DM', `dm_node_${sessionKey}`), Markup.button.callback('🖼️ Upload Status', `status_node_${sessionKey}`) ],
+                [ Markup.button.callback('📸 Group Status', `gstatus_node_${sessionKey}`) ],
                 [ Markup.button.callback('🔙 Back to Nodes', 'menu_nodes') ]
             ])
         }).catch(()=>{});
@@ -209,6 +221,194 @@ async function startTelegram() {
         ctx.editMessageText(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard([[ Markup.button.callback('🔙 Back to Node', `node_${sessionKey}`) ]]) }).catch(()=>{});
     });
 
+    // ==========================================
+    // 📸 GROUP STATUS SUBMENU
+    // ==========================================
+
+    // Helper: build the Group Status main submenu text + keyboard
+    function buildGsMenu(sessionKey) {
+        const gs = getGsPlugin();
+        const cfg = gs ? gs.getGsConfig() : { backgroundColor: '#000000', font: 0, repeat: 1 };
+        const BG_COLORS = gs?.BG_COLORS || {};
+        const FONTS     = gs?.FONTS     || {};
+
+        const colorName = Object.keys(BG_COLORS).find(k => BG_COLORS[k] === cfg.backgroundColor) || cfg.backgroundColor;
+        const fontName  = Object.keys(FONTS).find(k => FONTS[k] === cfg.font) || String(cfg.font);
+
+        const text =
+            `📸 <b>GROUP STATUS ENGINE</b>\n\n` +
+            `🎨 Background : <code>${colorName}</code>\n` +
+            `🖊️ Font        : <code>${fontName}</code>\n` +
+            `🔁 Repeat      : <code>${cfg.repeat}×</code>\n\n` +
+            `<i>Post a story to all groups this node is in.\n` +
+            `Use /updategstatus [text or link] to post from here.</i>`;
+
+        const keyboard = Markup.inlineKeyboard([
+            [ Markup.button.callback('🎨 Change Color',  `gs_color_${sessionKey}`),  Markup.button.callback('🖊️ Change Font', `gs_font_${sessionKey}`) ],
+            [ Markup.button.callback('🔁 Set Repeat',    `gs_repeat_${sessionKey}`), Markup.button.callback('🗑️ Reset Config', `gs_reset_${sessionKey}`) ],
+            [ Markup.button.callback('📤 Post Now (text/link)', `gs_postnow_${sessionKey}`) ],
+            [ Markup.button.callback('🔙 Back to Node',  `node_${sessionKey}`) ],
+        ]);
+
+        return { text, keyboard };
+    }
+
+    bot.action(/^gstatus_node_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const sessionKey = ctx.match[1];
+        const { text, keyboard } = buildGsMenu(sessionKey);
+        ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(()=>{});
+    });
+
+    // ── Color picker ──────────────────────────────────────────────────────────
+    bot.action(/^gs_color_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const sessionKey = ctx.match[1];
+        const gs = getGsPlugin();
+        if (!gs) return ctx.editMessageText('❌ Group Status plugin not loaded.').catch(()=>{});
+
+        const colorButtons = Object.keys(gs.BG_COLORS).map(name =>
+            Markup.button.callback(name, `gs_setcolor_${name}_${sessionKey}`)
+        );
+        // 2 per row
+        const rows = [];
+        for (let i = 0; i < colorButtons.length; i += 2) rows.push(colorButtons.slice(i, i + 2));
+        rows.push([ Markup.button.callback('🔙 Back', `gstatus_node_${sessionKey}`) ]);
+
+        ctx.editMessageText('🎨 <b>SELECT BACKGROUND COLOR:</b>', {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard(rows)
+        }).catch(()=>{});
+    });
+
+    bot.action(/^gs_setcolor_([a-z]+)_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const colorName  = ctx.match[1];
+        const sessionKey = ctx.match[2];
+        const gs = getGsPlugin();
+        if (!gs || !gs.BG_COLORS[colorName]) return;
+        gs.setGsConfig({ backgroundColor: gs.BG_COLORS[colorName] });
+        const { text, keyboard } = buildGsMenu(sessionKey);
+        ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(()=>{});
+    });
+
+    // ── Font picker ───────────────────────────────────────────────────────────
+    bot.action(/^gs_font_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const sessionKey = ctx.match[1];
+        const gs = getGsPlugin();
+        if (!gs) return ctx.editMessageText('❌ Group Status plugin not loaded.').catch(()=>{});
+
+        const fontButtons = Object.keys(gs.FONTS).map(name =>
+            Markup.button.callback(name, `gs_setfont_${name}_${sessionKey}`)
+        );
+        const rows = [];
+        for (let i = 0; i < fontButtons.length; i += 3) rows.push(fontButtons.slice(i, i + 3));
+        rows.push([ Markup.button.callback('🔙 Back', `gstatus_node_${sessionKey}`) ]);
+
+        ctx.editMessageText('🖊️ <b>SELECT FONT STYLE:</b>', {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard(rows)
+        }).catch(()=>{});
+    });
+
+    bot.action(/^gs_setfont_([a-z]+)_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const fontName   = ctx.match[1];
+        const sessionKey = ctx.match[2];
+        const gs = getGsPlugin();
+        if (!gs || gs.FONTS[fontName] === undefined) return;
+        gs.setGsConfig({ font: gs.FONTS[fontName] });
+        const { text, keyboard } = buildGsMenu(sessionKey);
+        ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(()=>{});
+    });
+
+    // ── Repeat picker ─────────────────────────────────────────────────────────
+    bot.action(/^gs_repeat_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const sessionKey = ctx.match[1];
+        const options = [1, 2, 3, 5, 10, 15, 20, 30, 50];
+        const rows = [];
+        const btns = options.map(n => Markup.button.callback(`${n}×`, `gs_setrepeat_${n}_${sessionKey}`));
+        for (let i = 0; i < btns.length; i += 3) rows.push(btns.slice(i, i + 3));
+        rows.push([ Markup.button.callback('🔙 Back', `gstatus_node_${sessionKey}`) ]);
+
+        ctx.editMessageText('🔁 <b>SELECT REPEAT COUNT:</b>\n<i>How many times to post per group.</i>', {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard(rows)
+        }).catch(()=>{});
+    });
+
+    bot.action(/^gs_setrepeat_(\d+)_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const n          = parseInt(ctx.match[1]);
+        const sessionKey = ctx.match[2];
+        const gs = getGsPlugin();
+        if (!gs) return;
+        gs.setGsConfig({ repeat: n });
+        const { text, keyboard } = buildGsMenu(sessionKey);
+        ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(()=>{});
+    });
+
+    // ── Reset config ──────────────────────────────────────────────────────────
+    bot.action(/^gs_reset_(.+)$/, (ctx) => {
+        ctx.answerCbQuery('Config reset.');
+        const sessionKey = ctx.match[1];
+        const gs = getGsPlugin();
+        if (gs) gs.setGsConfig({ backgroundColor: gs.BG_COLORS.black, font: gs.FONTS.sans, repeat: 1 });
+        const { text, keyboard } = buildGsMenu(sessionKey);
+        ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(()=>{});
+    });
+
+    // ── Post Now (prompts user to send text/link via /updategstatus) ──────────
+    bot.action(/^gs_postnow_(.+)$/, (ctx) => {
+        ctx.answerCbQuery();
+        const sessionKey = ctx.match[1];
+        ctx.editMessageText(
+            `📤 <b>POST GROUP STATUS</b>\n\n` +
+            `Send your text or link as:\n<code>/updategstatus Your text or https://link.here</code>\n\n` +
+            `To target specific groups, add their JIDs:\n<code>/updategstatus 1234567890-1234567@g.us Your text</code>\n\n` +
+            `<i>Current config will be applied automatically.</i>`,
+            { parse_mode: 'HTML', ...Markup.inlineKeyboard([[ Markup.button.callback('🔙 Back', `gstatus_node_${sessionKey}`) ]]) }
+        ).catch(()=>{});
+    });
+
+    // ── /updategstatus Telegram command (bridges to plugin) ──────────────────
+    bot.command('updategstatus', async (ctx) => {
+        const text = ctx.message.text.replace('/updategstatus', '').trim();
+        if (!text) return ctx.reply('❌ Usage: <code>/updategstatus Your text or https://link</code>', { parse_mode: 'HTML' });
+
+        const sock = Array.from(activeSockets.values()).find(s => s?.user);
+        if (!sock) return ctx.reply('❌ No active WhatsApp nodes.');
+
+        const gs = getGsPlugin();
+        if (!gs) return ctx.reply('❌ Group Status plugin not loaded.');
+
+        ctx.reply('📡 <b>Posting group status...</b>', { parse_mode: 'HTML' });
+
+        const mockMsg = {
+            key: { remoteJid: sock.user.id.split(':')[0] + '@s.whatsapp.net', fromMe: true, id: `TG_GS_${Date.now()}` },
+            message: { conversation: `.updategstatus ${text}` }
+        };
+        const mockUser = { role: 'owner', stats: { commandsUsed: 0 }, activity: { isBanned: false } };
+        const args = text.split(' ');
+
+        const bridgeSock = new Proxy(sock, {
+            get(target, prop) {
+                if (prop === 'sendMessage') {
+                    return async (jid, payload, ...rest) => {
+                        if (payload.text) ctx.reply(`📱 <b>STATUS:</b>\n${payload.text}`, { parse_mode: 'HTML' });
+                        else return target.sendMessage(jid, payload, ...rest);
+                    };
+                }
+                return target[prop];
+            }
+        });
+
+        taskManager.submit(`TG_GS_${Date.now()}`, async (sig) => {
+            await gs.execute(bridgeSock, mockMsg, args, mockUser, '.updategstatus', sig);
+        }, { priority: 5, timeout: 120000 }).catch(err => ctx.reply(`❌ ${err.message}`));
+    });
 
     // ==========================================
     // 🛠️ MAIN MENU ACTION HANDLERS
