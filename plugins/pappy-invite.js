@@ -67,28 +67,25 @@ module.exports = {
             const randomStyle = inviteAesthetics[Math.floor(Math.random() * inviteAesthetics.length)];
             const aestheticCaption = randomStyle(groupName, memberCount, creator, desc, inviteCode);
 
-            // 5. Construct the PERFECT Ad Reply
-            let adReply = preview ? preview.externalAdReply : {
-                title: groupName,
-                body: `Join ${memberCount} members`,
-                mediaType: 1,
-                sourceUrl: fullLink,
+            // 5. Build the ad reply — always pin sourceUrl to the real invite link
+            //    mediaType 2 = WhatsApp group invite (makes the card tappable/joinable)
+            const adReply = {
+                title:                groupName,
+                body:                 `Group chat invite`,
+                mediaType:            2,
+                sourceUrl:            fullLink,
+                thumbnail:            pfpBuffer || preview?.externalAdReply?.thumbnail || undefined,
                 renderLargerThumbnail: true,
-                showAdAttribution: false
+                showAdAttribution:    false,
             };
 
-            // 🔥 THE FIX: If we downloaded the group's PFP, force it to be the card's thumbnail!
-            if (pfpBuffer) {
-                adReply.thumbnail = pfpBuffer;
-            }
-
-            // 6. Send purely as a TEXT message to avoid the double-image glitch
-            await sock.sendMessage(jid, { 
+            // 6. Send as text with the tappable invite card
+            await sock.sendMessage(jid, {
                 text: aestheticCaption,
                 contextInfo: {
                     externalAdReply: adReply,
-                    isForwarded: true,       // Makes it look viral
-                    forwardingScore: 999     
+                    isForwarded:     true,
+                    forwardingScore: 999,
                 }
             });
 
