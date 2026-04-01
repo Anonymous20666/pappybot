@@ -111,9 +111,9 @@ async function executeBroadcastTask(sock, groupData, textContent, mode, chat) {
     
     // Extract URLs using the new linkPreview helper
     const urls = extractUrls(textContent);
-    
-    // 1. Handle Link Preview generation if a URL exists in Godcast mode
-    if (urls && urls.length > 0 && mode === 'status') {
+
+    // 1. Generate link preview whenever a URL is present (both .gcast and .godcast)
+    if (urls && urls.length > 0) {
         await sock.sendMessage(chat, { text: `🔍 *Curating Drop:* Generating rich link preview...` });
         try {
             preview = await buildLinkPreview(textContent);

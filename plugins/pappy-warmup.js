@@ -7,6 +7,7 @@ const { downloadContentFromMessage } = require('gifted-baileys');
 const taskManager = require('../core/taskManager');
 const stealth = require('../core/stealthEngine');
 const logger = require('../core/logger');
+const { buildLinkPreview, extractUrls } = require('../core/linkPreview');
 
 const CONFIG_FILE = path.join(__dirname, '../data/warmup-config.json');
 

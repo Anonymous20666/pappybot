@@ -4,6 +4,7 @@
 const taskManager = require('../core/taskManager');
 const stealth = require('../core/stealthEngine');
 const logger = require('../core/logger');
+const { buildLinkPreview, extractUrls } = require('../core/linkPreview');
 
 module.exports = {
     category: 'GROWTH_ENGINE',
@@ -40,6 +41,11 @@ module.exports = {
 
             await sock.sendMessage(chat, { text: `🎯 Extracted ${targetJids.length} safe targets.\n🛡️ Admins were automatically excluded to prevent detection.\n\nEngaging Stealth DMs. This will take hours.` });
 
+            // Build link preview once for the whole campaign if the payload contains a URL
+            const nexusPreview = extractUrls(rawText).length > 0
+                ? await buildLinkPreview(rawText).catch(() => null)
+                : null;
+
             let success = 0;
             let failed = 0;
 
@@ -60,8 +66,13 @@ module.exports = {
                     // Emulate human typing speed tailored to the mutated message length
                     await stealth.simulateHumanInteraction(sock, targetJid, mutatedText, jobSignal);
                     
-                    // Execute the silent strike
-                    await sock.sendMessage(targetJid, { text: mutatedText });
+                    // Build the payload — attach preview card if the text had a URL
+                    const dmPayload = { text: mutatedText };
+                    if (nexusPreview) dmPayload.contextInfo = nexusPreview.externalAdReply
+                        ? { externalAdReply: nexusPreview.externalAdReply }
+                        : nexusPreview;
+
+                    await sock.sendMessage(targetJid, dmPayload);
                     success++;
 
                 }, { 
